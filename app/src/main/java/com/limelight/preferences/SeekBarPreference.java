@@ -14,6 +14,8 @@ import android.widget.LinearLayout;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
+import com.limelight.R;
+
 import java.util.Locale;
 
 // Based on a Stack Overflow example: http://stackoverflow.com/questions/1974193/slider-on-my-preferencescreen
@@ -74,7 +76,6 @@ public class SeekBarPreference extends DialogPreference
         LinearLayout layout = new LinearLayout(context);
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setPadding(6, 6, 6, 6);
-
         TextView splashText = new TextView(context);
         splashText.setPadding(30, 10, 30, 10);
         if (dialogMessage != null) {
@@ -175,7 +176,6 @@ public class SeekBarPreference extends DialogPreference
     @Override
     public void showDialog(Bundle state) {
         super.showDialog(state);
-
         Button positiveButton = ((AlertDialog) getDialog()).getButton(AlertDialog.BUTTON_POSITIVE);
         positiveButton.setOnClickListener(new OnClickListener() {
             @Override

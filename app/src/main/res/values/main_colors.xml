@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
   <color name="main_light">#414753</color>
-  <color name="main_dark">#141414</color>
-  <color name="main_dark2">#1E1E1E</color>
+  <color name="main_dark">#181A1C</color>
+  <color name="main_dark2">#343535</color>
+  <color name="main_dark3">#424243</color>
+  <color name="main_dark4">#232425</color>
   <color name="main_accent1">#5774AE</color>
-  <color name="main_accent_dark">#393D45</color>
+  <color name="main_accent_dark">#5B5C5D</color>
 </resources>

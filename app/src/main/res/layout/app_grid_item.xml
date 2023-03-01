@@ -2,8 +2,8 @@
 <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="180dp"
     android:layout_height="230dp"
-    android:elevation="15dp"
     android:background="@drawable/rounded_back2"
+    android:elevation="20dp"
     android:padding="5dp">
 
     <ImageView
@@ -14,14 +14,20 @@
         android:src="@color/main_accent1"
         android:clipToOutline="true"
         android:scaleType="centerCrop" />
+
     <ImageView
         android:id="@+id/grid_overlay"
-        android:layout_centerHorizontal="true"
-        android:layout_marginTop="10dp"
-        android:elevation="9dp"
         android:layout_width="80dp"
-        android:layout_height="80dp">
-    </ImageView>
+        android:layout_height="80dp"
+        android:layout_centerHorizontal="true"
+        android:layout_centerVertical="true"
+        android:clipToOutline="true"
+        android:elevation="20dp"
+        android:background="@drawable/rounded_back2"
+        android:outlineProvider="background"
+        android:outlineSpotShadowColor="@android:color/black"
+        ></ImageView>
+
     <TextView
         android:id="@+id/grid_text"
         android:layout_width="match_parent"

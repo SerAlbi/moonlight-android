@@ -3,11 +3,10 @@
     android:id="@+id/fragmentView"
     android:layout_width="fill_parent"
     android:layout_height="fill_parent"
+    android:layout_marginTop="30dp"
     android:numColumns="auto_fit"
-    android:columnWidth="180dp"
-    android:stretchMode="spacingWidthUniform"
     android:focusable="true"
     android:focusableInTouchMode="true"
     android:clipToPadding="false"
-    android:layout_gravity="center"
+    android:stretchMode="spacingWidthUniform"
     android:gravity="center"/>

@@ -3,12 +3,12 @@
     android:fromDegrees="0"
     android:pivotX="50%"
     android:pivotY="50%"
-    android:toDegrees="360" >
+    android:toDegrees="1080" >
 
     <shape
         android:innerRadiusRatio="3"
         android:shape="ring"
-        android:thicknessRatio="8"
+        android:thicknessRatio="7"
         android:useLevel="false" >
 
         <size
@@ -23,5 +23,4 @@
             android:useLevel="false" />
 
     </shape>
-
 </rotate>
