@@ -2,10 +2,8 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/main_activity_background"
-    android:paddingLeft="@dimen/activity_horizontal_margin"
-    android:paddingTop="@dimen/activity_vertical_margin"
-    android:paddingRight="@dimen/activity_horizontal_margin"
+    android:background="@drawable/rounded_back"
+    android:padding="10dp"
     tools:context=".PcView">
 
     <RelativeLayout
@@ -26,12 +24,12 @@
             android:layout_centerVertical="true">
 
             <ProgressBar
-                style="?android:attr/progressBarStyleLarge"
                 android:id="@+id/pcs_loading"
-                android:layout_width="119dp"
+                style="?android:attr/progressBarStyleLarge"
+                android:layout_width="170dp"
                 android:layout_height="match_parent"
-                android:indeterminate="true"
                 android:layout_above="@+id/relativeLayout1"
+                android:indeterminate="true"
                 android:indeterminateDrawable="@drawable/progress" />
 
             <TextView
@@ -54,16 +52,18 @@
         style="?android:attr/borderlessButtonStyle"
         android:layout_width="70dp"
         android:layout_height="65dp"
+        android:layout_centerVertical="true"
         android:layout_alignParentStart="true"
         android:layout_alignParentLeft="true"
         android:layout_alignParentTop="true"
         android:cropToPadding="false"
         android:nextFocusForward="@id/helpButton"
         android:scaleType="fitXY"
-        android:src="@drawable/ic_settings" />
+        android:src="@drawable/gearshape_fill" />
 
     <ImageButton
         android:id="@+id/helpButton"
+        android:visibility="invisible"
         style="?android:attr/borderlessButtonStyle"
         android:layout_width="70dp"
         android:layout_height="65dp"
@@ -77,6 +77,7 @@
 
     <ImageButton
         android:id="@+id/manuallyAddPc"
+        android:visibility="invisible"
         style="?android:attr/borderlessButtonStyle"
         android:layout_width="70dp"
         android:layout_height="65dp"
