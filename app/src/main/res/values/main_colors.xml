@@ -7,4 +7,5 @@
   <color name="main_dark4">#232425</color>
   <color name="main_accent1">#5774AE</color>
   <color name="main_accent_dark">#5B5C5D</color>
+  <color name="main_error">#FF003B</color>
 </resources>
