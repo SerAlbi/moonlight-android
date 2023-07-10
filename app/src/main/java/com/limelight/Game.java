@@ -23,6 +23,7 @@ import com.limelight.nvstream.StreamConfiguration;
 import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.nvstream.http.NvApp;
 import com.limelight.nvstream.http.NvHTTP;
+import com.limelight.nvstream.input.ControllerPacket;
 import com.limelight.nvstream.input.KeyboardPacket;
 import com.limelight.nvstream.input.MouseButtonPacket;
 import com.limelight.nvstream.jni.MoonBridge;
@@ -404,14 +405,34 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 this);
 
         // Don't stream HDR if the decoder can't support it
-        if (willStreamHdr && !decoderRenderer.isHevcMain10Hdr10Supported()) {
+        if (willStreamHdr && !decoderRenderer.isHevcMain10Hdr10Supported() && !decoderRenderer.isAv1Main10Supported()) {
             willStreamHdr = false;
-            Toast.makeText(this, "Decoder does not support HEVC Main10HDR10", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Decoder does not support HDR10 profile", Toast.LENGTH_LONG).show();
         }
 
         // Display a message to the user if HEVC was forced on but we still didn't find a decoder
-        if (prefConfig.videoFormat == PreferenceConfiguration.FORCE_H265_ON && !decoderRenderer.isHevcSupported()) {
-            Toast.makeText(this, "No HEVC decoder found.\nFalling back to H.264.", Toast.LENGTH_LONG).show();
+        if (prefConfig.videoFormat == PreferenceConfiguration.FormatOption.FORCE_HEVC && !decoderRenderer.isHevcSupported()) {
+            Toast.makeText(this, "No HEVC decoder found", Toast.LENGTH_LONG).show();
+        }
+
+        // Display a message to the user if AV1 was forced on but we still didn't find a decoder
+        if (prefConfig.videoFormat == PreferenceConfiguration.FormatOption.FORCE_AV1 && !decoderRenderer.isAv1Supported()) {
+            Toast.makeText(this, "No AV1 decoder found", Toast.LENGTH_LONG).show();
+        }
+
+        // H.264 is always supported
+        int supportedVideoFormats = MoonBridge.VIDEO_FORMAT_H264;
+        if (decoderRenderer.isHevcSupported()) {
+            supportedVideoFormats |= MoonBridge.VIDEO_FORMAT_H265;
+            if (willStreamHdr && decoderRenderer.isHevcMain10Hdr10Supported()) {
+                supportedVideoFormats |= MoonBridge.VIDEO_FORMAT_H265_MAIN10;
+            }
+        }
+        if (decoderRenderer.isAv1Supported()) {
+            supportedVideoFormats |= MoonBridge.VIDEO_FORMAT_AV1_MAIN8;
+            if (willStreamHdr && decoderRenderer.isAv1Main10Supported()) {
+                supportedVideoFormats |= MoonBridge.VIDEO_FORMAT_AV1_MAIN10;
+            }
         }
 
         int gamepadMask = ControllerHandler.getAttachedControllerMask(this);
@@ -463,8 +484,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 .setMaxPacketSize(1392)
                 .setRemoteConfiguration(StreamConfiguration.STREAM_CFG_AUTO) // NvConnection will perform LAN and VPN detection
                 .setHevcBitratePercentageMultiplier(75)
-                .setHevcSupported(decoderRenderer.isHevcSupported())
-                .setEnableHdr(willStreamHdr)
+                .setAv1BitratePercentageMultiplier(60)
+                .setSupportedVideoFormats(supportedVideoFormats)
                 .setAttachedGamepadMask(gamepadMask)
                 .setClientRefreshRateX100((int)(displayRefreshRate * 100))
                 .setAudioConfiguration(prefConfig.audioConfiguration)
@@ -1445,6 +1466,126 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         inputManager.toggleSoftInput(0, 0);
     }
 
+    private byte getLiTouchTypeFromEvent(MotionEvent event) {
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+            case MotionEvent.ACTION_POINTER_DOWN:
+                return MoonBridge.LI_TOUCH_EVENT_DOWN;
+
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_POINTER_UP:
+                if ((event.getFlags() & MotionEvent.FLAG_CANCELED) != 0) {
+                    return MoonBridge.LI_TOUCH_EVENT_CANCEL;
+                }
+                else {
+                    return MoonBridge.LI_TOUCH_EVENT_UP;
+                }
+
+            case MotionEvent.ACTION_MOVE:
+                return MoonBridge.LI_TOUCH_EVENT_MOVE;
+
+            case MotionEvent.ACTION_CANCEL:
+                return MoonBridge.LI_TOUCH_EVENT_CANCEL;
+
+            case MotionEvent.ACTION_HOVER_ENTER:
+            case MotionEvent.ACTION_HOVER_MOVE:
+                return MoonBridge.LI_TOUCH_EVENT_HOVER;
+
+            case MotionEvent.ACTION_HOVER_EXIT:
+                return MoonBridge.LI_TOUCH_EVENT_HOVER_LEAVE;
+
+            case MotionEvent.ACTION_BUTTON_PRESS:
+            case MotionEvent.ACTION_BUTTON_RELEASE:
+                return MoonBridge.LI_TOUCH_EVENT_BUTTON_ONLY;
+
+            default:
+               return -1;
+        }
+    }
+
+    private float[] getStreamViewRelativeNormalizedXY(View view, MotionEvent event) {
+        float normalizedX = event.getX(event.getActionIndex());
+        float normalizedY = event.getY(event.getActionIndex());
+
+        // For the containing background view, we must subtract the origin
+        // of the StreamView to get video-relative coordinates.
+        if (view != streamView) {
+            normalizedX -= streamView.getX();
+            normalizedY -= streamView.getY();
+        }
+
+        normalizedX = Math.max(normalizedX, 0.0f);
+        normalizedY = Math.max(normalizedY, 0.0f);
+
+        normalizedX = Math.min(normalizedX, streamView.getWidth());
+        normalizedY = Math.min(normalizedY, streamView.getHeight());
+
+        normalizedX /= streamView.getWidth();
+        normalizedY /= streamView.getHeight();
+
+        return new float[] { normalizedX, normalizedY };
+    }
+
+    private boolean trySendPenEvent(View view, MotionEvent event) {
+        byte eventType = getLiTouchTypeFromEvent(event);
+        if (eventType < 0) {
+            return false;
+        }
+
+        byte toolType;
+        switch (event.getToolType(event.getActionIndex())) {
+            case MotionEvent.TOOL_TYPE_ERASER:
+                toolType = MoonBridge.LI_TOOL_TYPE_ERASER;
+                break;
+            case MotionEvent.TOOL_TYPE_STYLUS:
+                toolType = MoonBridge.LI_TOOL_TYPE_PEN;
+                break;
+            default:
+                return false;
+        }
+
+        byte penButtons = 0;
+        if ((event.getButtonState() & MotionEvent.BUTTON_STYLUS_PRIMARY) != 0) {
+            penButtons |= MoonBridge.LI_PEN_BUTTON_PRIMARY;
+        }
+        if ((event.getButtonState() & MotionEvent.BUTTON_STYLUS_SECONDARY) != 0) {
+            penButtons |= MoonBridge.LI_PEN_BUTTON_SECONDARY;
+        }
+
+        short rotationDegrees = MoonBridge.LI_ROT_UNKNOWN;
+        byte tiltDegrees = MoonBridge.LI_TILT_UNKNOWN;
+        InputDevice dev = event.getDevice();
+        if (dev != null) {
+            if (dev.getMotionRange(MotionEvent.AXIS_ORIENTATION, event.getSource()) != null) {
+                rotationDegrees = (short)Math.toDegrees(event.getOrientation(event.getActionIndex()));
+                if (rotationDegrees < 0) {
+                    rotationDegrees += 360;
+                }
+            }
+            if (dev.getMotionRange(MotionEvent.AXIS_TILT, event.getSource()) != null) {
+                tiltDegrees = (byte)Math.toDegrees(event.getAxisValue(MotionEvent.AXIS_TILT, event.getActionIndex()));
+            }
+        }
+
+        float[] normalizedCoords = getStreamViewRelativeNormalizedXY(view, event);
+        return conn.sendPenEvent(eventType, toolType, penButtons,
+                normalizedCoords[0], normalizedCoords[1],
+                event.getPressure(event.getActionIndex()),
+                rotationDegrees, tiltDegrees) != MoonBridge.LI_ERR_UNSUPPORTED;
+    }
+
+    private boolean trySendTouchEvent(View view, MotionEvent event) {
+        byte eventType = getLiTouchTypeFromEvent(event);
+        if (eventType < 0) {
+            return false;
+        }
+
+        float[] normalizedCoords = getStreamViewRelativeNormalizedXY(view, event);
+        return conn.sendTouchEvent(eventType, event.getPointerId(event.getActionIndex()),
+                normalizedCoords[0], normalizedCoords[1],
+                event.getPressure(event.getActionIndex())) != MoonBridge.LI_ERR_UNSUPPORTED;
+    }
+
     // Returns true if the event was consumed
     // NB: View is only present if called from a view callback
     private boolean handleMotionEvent(View view, MotionEvent event) {
@@ -1454,10 +1595,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
 
         int eventSource = event.getSource();
+        int deviceSources = event.getDevice() != null ? event.getDevice().getSources() : 0;
         if ((eventSource & InputDevice.SOURCE_CLASS_JOYSTICK) != 0) {
             if (controllerHandler.handleMotionEvent(event)) {
                 return true;
             }
+        }
+        else if ((deviceSources & InputDevice.SOURCE_CLASS_JOYSTICK) != 0 && controllerHandler.tryHandleTouchpadEvent(event)) {
+            return true;
         }
         else if ((eventSource & InputDevice.SOURCE_CLASS_POINTER) != 0 ||
                  (eventSource & InputDevice.SOURCE_CLASS_POSITION) != 0 ||
@@ -1544,6 +1689,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             }
                         }
                     }
+                }
+                else if (view != null && trySendPenEvent(view, event)) {
+                    // If our host supports pen events, send it directly
+                    return true;
                 }
                 else if (view != null) {
                     // Otherwise send absolute position based on the view for SOURCE_CLASS_POINTER
@@ -1684,6 +1833,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         aTouchContext.cancelTouch();
                     }
 
+                    return true;
+                }
+
+                if (!prefConfig.touchscreenTrackpad && trySendTouchEvent(view, event)) {
+                    // If this host supports touch events and absolute touch is enabled,
+                    // send it directly as a touch event.
                     return true;
                 }
 
@@ -2105,9 +2260,26 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     @Override
+    public void rumbleTriggers(short controllerNumber, short leftTrigger, short rightTrigger) {
+        LimeLog.info(String.format((Locale)null, "Rumble on gamepad triggers %d: %04x %04x", controllerNumber, leftTrigger, rightTrigger));
+
+        controllerHandler.handleRumbleTriggers(controllerNumber, leftTrigger, rightTrigger);
+    }
+
+    @Override
     public void setHdrMode(boolean enabled, byte[] hdrMetadata) {
         LimeLog.info("Display HDR mode: " + (enabled ? "enabled" : "disabled"));
         decoderRenderer.setHdrMode(enabled, hdrMetadata);
+    }
+
+    @Override
+    public void setMotionEventState(short controllerNumber, byte motionType, short reportRateHz) {
+        controllerHandler.handleSetMotionEventState(controllerNumber, motionType, reportRateHz);
+    }
+
+    @Override
+    public void setControllerLED(short controllerNumber, byte r, byte g, byte b) {
+        controllerHandler.handleSetControllerLED(controllerNumber, r, g, b);
     }
 
     @Override

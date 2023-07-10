@@ -691,6 +691,17 @@ public class MediaCodecHelper {
         return isDecoderInList(refFrameInvalidationHevcPrefixes, decoderInfo.getName());
     }
 
+    public static boolean decoderSupportsRefFrameInvalidationAv1(MediaCodecInfo decoderInfo) {
+        // We'll use the same heuristics as HEVC for now
+        if (decoderSupportsAndroidRLowLatency(decoderInfo, "video/av01") ||
+                decoderSupportsKnownVendorLowLatencyOption(decoderInfo.getName())) {
+            LimeLog.info("Enabling AV1 RFI based on low latency option support");
+            return true;
+        }
+
+        return false;
+    }
+
     public static boolean decoderIsWhitelistedForHevc(MediaCodecInfo decoderInfo) {
         // Google didn't have official support for HEVC (or more importantly, a CTS test) until
         // Lollipop. I've seen some MediaTek devices on 4.4 crash when attempting to use HEVC,
@@ -736,7 +747,33 @@ public class MediaCodecHelper {
         // Otherwise, we use our list of known working HEVC decoders
         return isDecoderInList(whitelistedHevcDecoders, decoderInfo.getName());
     }
-    
+
+    public static boolean isDecoderWhitelistedForAv1(MediaCodecInfo decoderInfo) {
+        // Google didn't have official support for AV1 (or more importantly, a CTS test) until
+        // Android 10, so don't use any decoder before then.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            return false;
+        }
+
+        //
+        // Software decoders are terrible and we never want to use them.
+        // We want to catch decoders like:
+        // OMX.qcom.video.decoder.hevcswvdec
+        // OMX.SEC.hevc.sw.dec
+        //
+        if (decoderInfo.getName().contains("sw")) {
+            LimeLog.info("Disallowing AV1 on software decoder: " + decoderInfo.getName());
+            return false;
+        }
+        else if (!decoderInfo.isHardwareAccelerated() || decoderInfo.isSoftwareOnly()) {
+            LimeLog.info("Disallowing AV1 on software decoder: " + decoderInfo.getName());
+            return false;
+        }
+
+        // TODO: Test some AV1 decoders
+        return false;
+    }
+
     @SuppressWarnings("deprecation")
     @SuppressLint("NewApi")
     private static LinkedList<MediaCodecInfo> getMediaCodecList() {
