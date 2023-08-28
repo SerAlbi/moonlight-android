@@ -639,6 +639,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 performanceOverlayView.setVisibility(View.GONE);
                 notificationOverlayView.setVisibility(View.GONE);
 
+                // Disable sensors while in PiP mode
+                controllerHandler.disableSensors();
+
                 // Update GameManager state to indicate we're in PiP (still gaming, but interruptible)
                 UiHelper.notifyStreamEnteringPiP(this);
             }
@@ -656,6 +659,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 }
 
                 notificationOverlayView.setVisibility(requestedNotificationOverlayVisibility);
+
+                // Enable sensors again after exiting PiP
+                controllerHandler.enableSensors();
 
                 // Update GameManager state to indicate we're out of PiP (gaming, non-interruptible)
                 UiHelper.notifyStreamExitingPiP(this);
@@ -1139,15 +1145,26 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
                 // Add the video codec to the post-stream toast
                 if (message != null) {
-                    if (videoFormat == MoonBridge.VIDEO_FORMAT_H265_MAIN10) {
-                        message += " [HEVC HDR]";
+                    message += " [";
+
+                    if ((videoFormat & MoonBridge.VIDEO_FORMAT_MASK_H264) != 0) {
+                        message += "H.264";
                     }
-                    else if (videoFormat == MoonBridge.VIDEO_FORMAT_H265) {
-                        message += " [HEVC]";
+                    else if ((videoFormat & MoonBridge.VIDEO_FORMAT_MASK_H265) != 0) {
+                        message += "HEVC";
                     }
-                    else if (videoFormat == MoonBridge.VIDEO_FORMAT_H264) {
-                        message += " [H.264]";
+                    else if ((videoFormat & MoonBridge.VIDEO_FORMAT_MASK_AV1) != 0) {
+                        message += "AV1";
                     }
+                    else {
+                        message += "UNKNOWN";
+                    }
+
+                    if ((videoFormat & MoonBridge.VIDEO_FORMAT_MASK_10BIT) != 0) {
+                        message += " HDR";
+                    }
+
+                    message += "]";
                 }
 
                 if (message != null) {
@@ -1485,7 +1502,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 return MoonBridge.LI_TOUCH_EVENT_MOVE;
 
             case MotionEvent.ACTION_CANCEL:
-                return MoonBridge.LI_TOUCH_EVENT_CANCEL;
+                // ACTION_CANCEL applies to *all* pointers in the gesture, so it maps to CANCEL_ALL
+                // rather than CANCEL. For a single pointer cancellation, that's indicated via
+                // FLAG_CANCELED on a ACTION_POINTER_UP.
+                // https://developer.android.com/develop/ui/views/touch-and-input/gestures/multi
+                return MoonBridge.LI_TOUCH_EVENT_CANCEL_ALL;
 
             case MotionEvent.ACTION_HOVER_ENTER:
             case MotionEvent.ACTION_HOVER_MOVE:
@@ -1503,9 +1524,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
     }
 
-    private float[] getStreamViewRelativeNormalizedXY(View view, MotionEvent event) {
-        float normalizedX = event.getX(event.getActionIndex());
-        float normalizedY = event.getY(event.getActionIndex());
+    private float[] getStreamViewRelativeNormalizedXY(View view, MotionEvent event, int pointerIndex) {
+        float normalizedX = event.getX(pointerIndex);
+        float normalizedY = event.getY(pointerIndex);
 
         // For the containing background view, we must subtract the origin
         // of the StreamView to get video-relative coordinates.
@@ -1526,24 +1547,101 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         return new float[] { normalizedX, normalizedY };
     }
 
-    private boolean trySendPenEvent(View view, MotionEvent event) {
-        byte eventType = getLiTouchTypeFromEvent(event);
-        if (eventType < 0) {
-            return false;
-        }
+    private static float normalizeValueInRange(float value, InputDevice.MotionRange range) {
+        return (value - range.getMin()) / range.getRange();
+    }
 
-        byte toolType;
-        switch (event.getToolType(event.getActionIndex())) {
-            case MotionEvent.TOOL_TYPE_ERASER:
-                toolType = MoonBridge.LI_TOOL_TYPE_ERASER;
-                break;
-            case MotionEvent.TOOL_TYPE_STYLUS:
-                toolType = MoonBridge.LI_TOOL_TYPE_PEN;
-                break;
+    private static float getPressureOrDistance(MotionEvent event, int pointerIndex) {
+        InputDevice dev = event.getDevice();
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_HOVER_ENTER:
+            case MotionEvent.ACTION_HOVER_MOVE:
+            case MotionEvent.ACTION_HOVER_EXIT:
+                // Hover events report distance
+                if (dev != null) {
+                    InputDevice.MotionRange distanceRange = dev.getMotionRange(MotionEvent.AXIS_DISTANCE, event.getSource());
+                    if (distanceRange != null) {
+                        return normalizeValueInRange(event.getAxisValue(MotionEvent.AXIS_DISTANCE, pointerIndex), distanceRange);
+                    }
+                }
+                return 0.0f;
+
             default:
-                return false;
+                // Other events report pressure
+                return event.getPressure(pointerIndex);
+        }
+    }
+
+    private static short getRotationDegrees(MotionEvent event, int pointerIndex) {
+        InputDevice dev = event.getDevice();
+        if (dev != null) {
+            if (dev.getMotionRange(MotionEvent.AXIS_ORIENTATION, event.getSource()) != null) {
+                short rotationDegrees = (short) Math.toDegrees(event.getOrientation(pointerIndex));
+                if (rotationDegrees < 0) {
+                    rotationDegrees += 360;
+                }
+                return rotationDegrees;
+            }
+        }
+        return MoonBridge.LI_ROT_UNKNOWN;
+    }
+
+    private static float[] polarToCartesian(float r, float theta) {
+        return new float[] { (float)(r * Math.cos(theta)), (float)(r * Math.sin(theta)) };
+    }
+
+    private static float cartesianToR(float[] point) {
+        return (float)Math.sqrt(Math.pow(point[0], 2) + Math.pow(point[1], 2));
+    }
+
+    private float[] getStreamViewNormalizedContactArea(MotionEvent event, int pointerIndex) {
+        float orientation;
+
+        // If the orientation is unknown, we'll just assume it's at a 45 degree angle and scale it by
+        // X and Y scaling factors evenly.
+        if (event.getDevice() == null || event.getDevice().getMotionRange(MotionEvent.AXIS_ORIENTATION, event.getSource()) == null) {
+            orientation = (float)(Math.PI / 4);
+        }
+        else {
+            orientation = event.getOrientation(pointerIndex);
         }
 
+        float contactAreaMajor, contactAreaMinor;
+        switch (event.getActionMasked()) {
+            // Hover events report the tool size
+            case MotionEvent.ACTION_HOVER_ENTER:
+            case MotionEvent.ACTION_HOVER_MOVE:
+            case MotionEvent.ACTION_HOVER_EXIT:
+                contactAreaMajor = event.getToolMajor(pointerIndex);
+                contactAreaMinor = event.getToolMinor(pointerIndex);
+                break;
+
+            // Other events report contact area
+            default:
+                contactAreaMajor = event.getTouchMajor(pointerIndex);
+                contactAreaMinor = event.getTouchMinor(pointerIndex);
+                break;
+        }
+
+        // The contact area major axis is parallel to the orientation, so we simply convert
+        // polar to cartesian coordinates using the orientation as theta.
+        float[] contactAreaMajorCartesian = polarToCartesian(contactAreaMajor, orientation);
+
+        // The contact area minor axis is perpendicular to the contact area major axis (and thus
+        // the orientation), so rotate the orientation angle by 90 degrees.
+        float[] contactAreaMinorCartesian = polarToCartesian(contactAreaMinor, (float)(orientation + (Math.PI / 2)));
+
+        // Normalize the contact area to the stream view size
+        contactAreaMajorCartesian[0] = Math.min(Math.abs(contactAreaMajorCartesian[0]), streamView.getWidth()) / streamView.getWidth();
+        contactAreaMinorCartesian[0] = Math.min(Math.abs(contactAreaMinorCartesian[0]), streamView.getWidth()) / streamView.getWidth();
+        contactAreaMajorCartesian[1] = Math.min(Math.abs(contactAreaMajorCartesian[1]), streamView.getHeight()) / streamView.getHeight();
+        contactAreaMinorCartesian[1] = Math.min(Math.abs(contactAreaMinorCartesian[1]), streamView.getHeight()) / streamView.getHeight();
+
+        // Convert the normalized values back into polar coordinates
+        return new float[] { cartesianToR(contactAreaMajorCartesian), cartesianToR(contactAreaMinorCartesian) };
+    }
+
+    private boolean sendPenEventForPointer(View view, MotionEvent event, byte eventType, byte toolType, int pointerIndex) {
         byte penButtons = 0;
         if ((event.getButtonState() & MotionEvent.BUTTON_STYLUS_PRIMARY) != 0) {
             penButtons |= MoonBridge.LI_PEN_BUTTON_PRIMARY;
@@ -1552,26 +1650,86 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             penButtons |= MoonBridge.LI_PEN_BUTTON_SECONDARY;
         }
 
-        short rotationDegrees = MoonBridge.LI_ROT_UNKNOWN;
         byte tiltDegrees = MoonBridge.LI_TILT_UNKNOWN;
         InputDevice dev = event.getDevice();
         if (dev != null) {
-            if (dev.getMotionRange(MotionEvent.AXIS_ORIENTATION, event.getSource()) != null) {
-                rotationDegrees = (short)Math.toDegrees(event.getOrientation(event.getActionIndex()));
-                if (rotationDegrees < 0) {
-                    rotationDegrees += 360;
-                }
-            }
             if (dev.getMotionRange(MotionEvent.AXIS_TILT, event.getSource()) != null) {
-                tiltDegrees = (byte)Math.toDegrees(event.getAxisValue(MotionEvent.AXIS_TILT, event.getActionIndex()));
+                tiltDegrees = (byte)Math.toDegrees(event.getAxisValue(MotionEvent.AXIS_TILT, pointerIndex));
             }
         }
 
-        float[] normalizedCoords = getStreamViewRelativeNormalizedXY(view, event);
+        float[] normalizedCoords = getStreamViewRelativeNormalizedXY(view, event, pointerIndex);
+        float[] normalizedContactArea = getStreamViewNormalizedContactArea(event, pointerIndex);
         return conn.sendPenEvent(eventType, toolType, penButtons,
                 normalizedCoords[0], normalizedCoords[1],
-                event.getPressure(event.getActionIndex()),
-                rotationDegrees, tiltDegrees) != MoonBridge.LI_ERR_UNSUPPORTED;
+                getPressureOrDistance(event, pointerIndex),
+                normalizedContactArea[0], normalizedContactArea[1],
+                getRotationDegrees(event, pointerIndex), tiltDegrees) != MoonBridge.LI_ERR_UNSUPPORTED;
+    }
+
+    private static byte convertToolTypeToStylusToolType(MotionEvent event, int pointerIndex) {
+        switch (event.getToolType(pointerIndex)) {
+            case MotionEvent.TOOL_TYPE_ERASER:
+                return MoonBridge.LI_TOOL_TYPE_ERASER;
+            case MotionEvent.TOOL_TYPE_STYLUS:
+                return MoonBridge.LI_TOOL_TYPE_PEN;
+            default:
+                return MoonBridge.LI_TOOL_TYPE_UNKNOWN;
+        }
+    }
+
+    private boolean trySendPenEvent(View view, MotionEvent event) {
+        byte eventType = getLiTouchTypeFromEvent(event);
+        if (eventType < 0) {
+            return false;
+        }
+
+        if (event.getActionMasked() == MotionEvent.ACTION_MOVE) {
+            // Move events may impact all active pointers
+            boolean handledStylusEvent = false;
+            for (int i = 0; i < event.getPointerCount(); i++) {
+                byte toolType = convertToolTypeToStylusToolType(event, i);
+                if (toolType == MoonBridge.LI_TOOL_TYPE_UNKNOWN) {
+                    // Not a stylus pointer, so skip it
+                    continue;
+                }
+                else {
+                    // This pointer is a stylus, so we'll report that we handled this event
+                    handledStylusEvent = true;
+                }
+
+                if (!sendPenEventForPointer(view, event, eventType, toolType, i)) {
+                    // Pen events aren't supported by the host
+                    return false;
+                }
+            }
+            return handledStylusEvent;
+        }
+        else if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+            // Cancel impacts all active pointers
+            return conn.sendPenEvent(MoonBridge.LI_TOUCH_EVENT_CANCEL_ALL, MoonBridge.LI_TOOL_TYPE_UNKNOWN, (byte)0,
+                    0, 0, 0, 0, 0,
+                    MoonBridge.LI_ROT_UNKNOWN, MoonBridge.LI_TILT_UNKNOWN) != MoonBridge.LI_ERR_UNSUPPORTED;
+        }
+        else {
+            // Up, Down, and Hover events are specific to the action index
+            byte toolType = convertToolTypeToStylusToolType(event, event.getActionIndex());
+            if (toolType == MoonBridge.LI_TOOL_TYPE_UNKNOWN) {
+                // Not a stylus event
+                return false;
+            }
+            return sendPenEventForPointer(view, event, eventType, toolType, event.getActionIndex());
+        }
+    }
+
+    private boolean sendTouchEventForPointer(View view, MotionEvent event, byte eventType, int pointerIndex) {
+        float[] normalizedCoords = getStreamViewRelativeNormalizedXY(view, event, pointerIndex);
+        float[] normalizedContactArea = getStreamViewNormalizedContactArea(event, pointerIndex);
+        return conn.sendTouchEvent(eventType, event.getPointerId(pointerIndex),
+                normalizedCoords[0], normalizedCoords[1],
+                getPressureOrDistance(event, pointerIndex),
+                normalizedContactArea[0], normalizedContactArea[1],
+                getRotationDegrees(event, pointerIndex)) != MoonBridge.LI_ERR_UNSUPPORTED;
     }
 
     private boolean trySendTouchEvent(View view, MotionEvent event) {
@@ -1580,10 +1738,25 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return false;
         }
 
-        float[] normalizedCoords = getStreamViewRelativeNormalizedXY(view, event);
-        return conn.sendTouchEvent(eventType, event.getPointerId(event.getActionIndex()),
-                normalizedCoords[0], normalizedCoords[1],
-                event.getPressure(event.getActionIndex())) != MoonBridge.LI_ERR_UNSUPPORTED;
+        if (event.getActionMasked() == MotionEvent.ACTION_MOVE) {
+            // Move events may impact all active pointers
+            for (int i = 0; i < event.getPointerCount(); i++) {
+                if (!sendTouchEventForPointer(view, event, eventType, i)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        else if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+            // Cancel impacts all active pointers
+            return conn.sendTouchEvent(MoonBridge.LI_TOUCH_EVENT_CANCEL_ALL, 0,
+                    0, 0, 0, 0, 0,
+                    MoonBridge.LI_ROT_UNKNOWN) != MoonBridge.LI_ERR_UNSUPPORTED;
+        }
+        else {
+            // Up, Down, and Hover events are specific to the action index
+            return sendTouchEventForPointer(view, event, eventType, event.getActionIndex());
+        }
     }
 
     // Returns true if the event was consumed
